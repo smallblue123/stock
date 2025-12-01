@@ -1,182 +1,187 @@
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
+import numpy as np
+import mysql.connector
 from io import StringIO
+from datetime import datetime
 
-# 上市股票
-# 台灣證券交易所股票日資料
-def fetch_twse_stock_daily(stock_no, start_date, end_date=None):
+# ==========================================
+# 資料庫設定
+# ==========================================
+DB_CONFIG = {
+    "host": "localhost",
+    "user": "root",
+    "password": "81997337rich",
+    "database": "stock_db"
+}
+
+# ==========================================
+# 1. Fetcher 層 (負責抓取與清洗)
+# ==========================================
+def get_twse_tpex_list():
     """
-    取得指定股票在指定日期或日期區間的日資料。
-    - 若只輸入 start_date，則輸出該月的資料。
-    - 日期格式: 'YYYYMMDD'
+    [Fetcher] 從證交所與櫃買中心抓取股票清單
+    回傳: 清洗完成的 DataFrame
     """
-    result = []
+    print("開始下載證交所與櫃買中心資料...")
 
-    # 轉成 datetime 物件
-    start = datetime.strptime(start_date, "%Y%m%d")
-    if end_date:
-        end = datetime.strptime(end_date, "%Y%m%d")
-    else:
-        # 如果沒有給 end_date，則取該月最後一天
-        if start.month == 12:
-            end = datetime(start.year + 1, 1, 1) - pd.Timedelta(days=1)
-        else:
-            end = datetime(start.year, start.month + 1, 1) - pd.Timedelta(days=1)
+    # 1. 下載 上市 (TWSE, Mode=2)
+    try:
+        url_twse = 'https://isin.twse.com.tw/isin/C_public.jsp?strMode=2'
+        resp_twse = requests.get(url_twse)
+        resp_twse.encoding = 'big5hkscs' # 證交所使用 Big5 編碼
+        df_twse = pd.read_html(StringIO(resp_twse.text), header=0)[0]
+    except Exception as e:
+        print(f"下載上市資料失敗: {e}")
+        return pd.DataFrame()
 
-    # 產生每個月的第一天
-    months = []
-    current = datetime(start.year, start.month, 1)
-    while current <= end:
-        months.append(current.strftime("%Y%m01"))
-        # 下個月
-        if current.month == 12:
-            current = datetime(current.year + 1, 1, 1)
-        else:
-            current = datetime(current.year, current.month + 1, 1)
-    # 逐月抓資料
-    for date in months:
-        url = f'https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={date}&stockNo={stock_no}'
-        resp = requests.get(url)
-        if resp.status_code == 200:
-            data = resp.json()
-            if 'data' in data:
-                for row in data['data']:
-                    # 日期格式轉換
-                    roc_date = row[0]
-                    y, m, d = roc_date.split('/')
-                    year = int(y) + 1911
-                    row_date = f"{year}-{m}-{d}"
-                    row_datetime = datetime.strptime(row_date, "%Y-%m-%d")
+    # 2. 下載 上櫃 (TPEX, Mode=4)
+    try:
+        url_tpex = 'https://isin.twse.com.tw/isin/C_public.jsp?strMode=4'
+        resp_tpex = requests.get(url_tpex)
+        resp_tpex.encoding = 'big5hkscs'
+        df_tpex = pd.read_html(StringIO(resp_tpex.text), header=0)[0]
+    except Exception as e:
+        print(f"下載上櫃資料失敗: {e}")
+        return pd.DataFrame()
 
-                    if start <= row_datetime <= end:
-                        result.append({
-                            "日期": row[0],
-                            "開盤價": row[3],
-                            '最高價': row[4],
-                            '最低價': row[5],
-                            '收盤價': row[6],
-                            '成交量': row[1]
-                        })
-    df = pd.DataFrame(result)
-    return df
+    # 3. 合併上市與上櫃資料
+    df = pd.concat([df_twse, df_tpex], ignore_index=True)
 
-# 上市股票基本資料
-def fetch_twse_stock_basic_info():
-    url = 'https://isin.twse.com.tw/isin/C_public.jsp?strMode=2'
-    resp = requests.get(url)
-    resp.encoding = 'big5'
-    # 用 StringIO 包裝 HTML 字串
-    df = pd.read_html(StringIO(resp.text), header=0)[0]
-    # 清理資料，只保留股票代號、名稱、產業類別
-    df = df[df['有價證券代號及名稱'].notnull()]
-    df = df[df['有價證券代號及名稱'].str.contains('　')]  # 全形空格分隔代號與名稱
-    df[['證券代號', '證券名稱']] = df['有價證券代號及名稱'].str.split('　', expand=True)
-    df = df[['證券代號', '證券名稱', '產業別']]
-    # df = df.rename(columns={'產業別': 'industry'})
-    df = df.reset_index(drop=True)
-    return df
+    # 4. 處理「股票類別」
+    # 說明：ISIN 網頁的分類標題是寫在某一整列 (例如整列都是 "股票")
+    # 抓出這些標題，填入新的 category 欄位
+    category_col = pd.Series(np.nan, index=df.index, dtype='object')
 
-# 融資融券餘額
-def fetch_twse_margin_trading(stock_no, date):
+    for idx, row in df.iterrows():
+        non_nan = row.dropna()
+        # 如果該列有值，且所有欄位的值都相同 -> 代表它是「標題列」
+        if len(non_nan) > 0 and (non_nan == non_nan.iloc[0]).all():
+            category_col[idx] = non_nan.iloc[0]
+
+    # 將抓到的標題 (如 "股票", "ETF") 往下填滿 (Forward Fill)
+    df['category'] = category_col.ffill()
+
+    # 5. 資料初步清洗
+    # 5-1. 移除標題列本身
+    # (如果第一欄的內容 == 分類名稱，代表這行是標題，不要保留)
+    df = df[df.iloc[:, 0] != df['category']]
+    
+    # 5-2. 排除格式不符的列
+    # 正常的股票代號名稱格式為: "2330　台積電" (中間包含全形空白)
+    # 這裡只保留符合此格式的列
+    df = df[df.iloc[:, 0].str.contains('　', na=False)].copy()
+
+    # 6. 拆分代號與名稱
+    # 來源: 第 0 欄 ('有價證券代號及名稱')
+    # n=1 代表只切第一刀，expand=True 代表拆分成兩個獨立欄位
+    split_data = df.iloc[:, 0].str.split('　', n=1, expand=True)
+
+    # 7. 組裝最終資料表 (Final DataFrame)
+    # 直接從對應位置 (iloc) 抓取資料，建立乾淨的表格
+    # -----------------------------------------------------------
+    # 原始 HTML 表格欄位索引 (Index) 對照說明:
+    # [0]: 有價證券代號及名稱 (已拆分為 split_data)
+    # [1]: 國際證券辨識號碼   (ISIN Code，不使用)
+    # [2]: 上市日             (list_date)
+    # [3]: 市場別             (market)
+    # [4]: 產業別             (industry)
+    # [5]: CFICode            (不使用)
+    # [6]: 備註               (不使用)
+    # -----------------------------------------------------------
+    final_df = pd.DataFrame({
+        'code':      split_data[0].str.strip(),      # 代號
+        'name':      split_data[1].str.strip(),      # 名稱
+        'market':    df.iloc[:, 3].str.strip(),      # 第 3 欄: 市場別
+        'industry':  df.iloc[:, 4].str.strip(),      # 第 4 欄: 產業別
+        'category':  df['category'],                 # 計算出的分類
+        'list_date': df.iloc[:, 2]                   # 第 2 欄: 上市日
+    })
+
+    # 8. 過濾黑名單 (Blacklist Filtering)
+    exclude_categories = ['上市認購(售)權證', '上櫃認購(售)權證']
+    
+    # 使用 "~" (NOT) 加上 .isin() 來保留「不在黑名單內」的資料
+    final_df = final_df[~final_df['category'].isin(exclude_categories)]
+
+    # 9. 格式化日期與處理空值
+    # 日期轉格式: YYYY/MM/DD -> YYYY-MM-DD
+    final_df['list_date'] = pd.to_datetime(final_df['list_date'], errors='coerce').dt.strftime('%Y-%m-%d')
+    
+    # 產業別如果是 NaN，轉為空字串
+    final_df['industry'] = final_df['industry'].fillna('')
+
+    print(f"資料清洗完成，共取得 {len(final_df)} 筆資料 (已過濾權證)")
+    return final_df
+
+
+# ==========================================
+# 2. Saver 層 (負責寫入資料庫)
+# ==========================================
+def save_stock_list_to_db(df):
     """
-    取得指定日期融資融券餘額
-    date 格式: 'YYYYMMDD'
+    [Saver] 將股票清單寫入 `stocks` 表格
+    使用 UPSERT (ON DUPLICATE KEY UPDATE)
     """
-    url = f'https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date}&selectType=ALL'
-    resp = requests.get(url)
-    if resp.status_code == 200:
-        data = resp.json()
-        if 'tables' in data:
-            for table in data['tables']:
-                for row in table['data']:
-                    # 欄位 ["代號","名稱","買進","賣出","現金償還","前日餘額","今日餘額","次一營業日限額",
-                    # 上:融資 下:融卷     "買進","賣出","現券償還","前日餘額","今日餘額","次一營業日限額","資券互抵","註記"]
-                    if row[0].strip() == stock_no:
-                        return {
-                            '日期': date,
-                            '股票代號': row[0],
-                            '股票名稱': row[1],
-                            "融資增減": int(row[2].replace(',', ''))-int(row[3].replace(',', '')),
-                            '融資餘額': row[6].replace(',', ''),
-                            '融券餘額': row[12].replace(',', ''),
-                            "融卷增減": int(row[8].replace(',', ''))-int(row[9].replace(',', ''))
-                        }
-    return None
+    if df.empty:
+        print("DataFrame 為空，跳過寫入。")
+        return
 
-# 三大法人買賣超
-def fetch_twse_institutional_investors(stock_no, date):
-    """
-    取得指定日期三大法人買賣超
-    date 格式: 'YYYYMMDD'
-    """
-    url = f'https://www.twse.com.tw/fund/T86?response=json&date={date}&selectType=ALL'
-    resp = requests.get(url)
-    if resp.status_code == 200:
-        data = resp.json()
-        if 'data' in data:
-            for row in data['data']:
-                if row[0].strip() == stock_no:
-                    return {
-                        '日期': date,
-                        '外資買賣超': round(int(row[4].replace(',', ''))/1000),
-                        '投信買賣超': round(int(row[7].replace(',', ''))/1000),
-                        '自營商買賣超': round(int(row[10].replace(',', ''))/1000)
-                    }
-    return None
-
-# --------------------------------------------------------------------------------
-
-# 上櫃股票
-# 台灣櫃買中心股票日資料
-def fetch_otc_stock_daily(stock_no, start_date, end_date=None):
-    """
-    取得指定上櫃股票在指定日期或日期區間的日資料。
-    - 若只輸入 start_date，則輸出該日的資料。
-    - 日期格式: 'YYYYMMDD'
-    """
-    result = []
-    # 轉成 datetime 物件
-    start = datetime.strptime(start_date, "%Y%m%d")
-    if end_date:
-        end = datetime.strptime(end_date, "%Y%m%d")
-    else:
-        end = start
+    conn = None
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        cursor = conn.cursor()
         
-    # 逐日抓資料（櫃買API只能抓單日）
-    current = start
-    while current <= end:
-        date_str = current.strftime("%Y%m%d")
-        url = f'https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/st43_result.php?d={date_str}&s={stock_no}&json=1'
-        resp = requests.get(url)
-        if resp.status_code == 200:
-            data = resp.json()
-            print(data)
-            # 櫃買API回傳欄位通常是'aaData'
-            if 'aaData' in data:
-                for row in data['aaData']:
-                    # row: [日期, 成交股數, 成交金額, 開盤價, 最高價, 最低價, 收盤價, 漲跌, 成交筆數]
-                    result.append({
-                        "日期": row[0],
-                        "開盤價": row[3],
-                        "最高價": row[4],
-                        "最低價": row[5],
-                        "收盤價": row[6],
-                        "成交量": row[1]
-                    })
-        current += timedelta(days=1)
-    df = pd.DataFrame(result)
-    return df
+        sql = """
+        INSERT INTO stocks (code, name, market, industry, category, list_date)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            name = VALUES(name),
+            market = VALUES(market),
+            industry = VALUES(industry),
+            category = VALUES(category),
+            list_date = VALUES(list_date);
+        """
+        
+        # 將 DataFrame 轉為 Tuple 列表 
+        # replace({np.nan: None}) 將 Pandas 的 NaN 轉為 SQL 的 NULL
+        data = [tuple(x) for x in df.replace({np.nan: None}).to_numpy()]
+        
+        # 執行批次寫入
+        cursor.executemany(sql, data)
+        conn.commit()
+        print(f"成功寫入/更新 {cursor.rowcount} 筆資料到 stock_db.stocks")
 
-# 測試
+    except mysql.connector.Error as err:
+        print(f"資料庫錯誤: {err}")
+    finally:
+        if conn and conn.is_connected():
+            cursor.close()
+            conn.close()
+
+# ==========================================
+# 3. Task 層 (任務指揮官)
+# ==========================================
+def update_stock_list_task():
+    """
+    [Task] 執行更新股票清單的完整流程
+    """
+    print("\n" + "="*40)
+    print("任務開始: 更新股票清單")
+    print("="*40)
+    
+    # 步驟 1: 抓取
+    df = get_twse_tpex_list()
+    
+    # 步驟 2: 存檔
+    if not df.empty:
+        save_stock_list_to_db(df)
+        
+    print("="*40 + "\n")
+
+
+# ==========================================
+# 主程式入口
+# ==========================================
 if __name__ == "__main__":
-    # df = fetch_twse_stock_daily('2330', '20250101', '20250328')
-    # print(df)
-    df_basic = fetch_twse_stock_basic_info()
-    print(df_basic.head())
-    # margin_data = fetch_twse_margin_trading('0050', '20250331')
-    # print(margin_data)
-    # institutional_data = fetch_twse_institutional_investors('0050', '20250924')
-    # print(institutional_data)
-    # df = fetch_otc_stock_daily('006201', '20250101', '20250201')
-    # print(df)
+    update_stock_list_task()
