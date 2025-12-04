@@ -1,0 +1,12 @@
+# .gitignore 的內容
+
+# 忽略資料庫設定檔
+config.py
+
+# 忽略 Python 編譯產生的暫存檔 (建議加上)
+__pycache__/
+*.pyc
+
+# 忽略虛擬環境資料夾 (如果有的話)
+venv/
+.env
