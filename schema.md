@@ -28,6 +28,8 @@
 | adj_close | DECIMAL(8,2) | 還權收盤價 |
 | volume | BIGINT | 成交股數 (股) |
 | turnover | DECIMAL(20,2) | 成交金額 (元) |
+| change_price | DECIMAL(8,2) | 漲跌價 |,
+| change_pct | DECIMAL(10,2) | 漲跌幅 (單位:%) |,
 
 ### 3. 三大法人 (institutional_trades)
 | 欄位 | 類型 | 說明 |

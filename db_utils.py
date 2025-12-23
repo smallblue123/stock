@@ -3,6 +3,7 @@ import mysql.connector
 import pandas as pd
 import numpy as np
 from config import DB_CONFIG
+import re
 
 def get_db_connection():
     return mysql.connector.connect(**DB_CONFIG)
@@ -70,10 +71,41 @@ def save_daily_prices(df):
         # 處理 NaN -> None
         data = [tuple(x) for x in df[cols].replace({np.nan: None}).to_numpy()]
         
-        cursor.executemany(sql, data)
-        conn.commit()
-        print(f"[DB] 成功寫入 {len(data)} 筆資料")
-        
+        try:
+            cursor.executemany(sql, data)
+            conn.commit()
+            print(f"[DB] 成功寫入 {len(data)} 筆資料")
+        except mysql.connector.Error as err:
+            print(f"[DB] 寫入失敗: {err}")
+            
+            # --- 精準抓兇手邏輯 ---
+            # 錯誤訊息範例: "1264 (22003): Out of range value for column 'change_pct' at row 485"
+            # 我們用 Regex 抓取 "at row (數字)"
+            match = re.search(r'at row (\d+)', str(err))
+            
+            if match:
+                # MySQL 報錯的 row 是從 1 開始算的 (1-based)
+                # Python 的 list 是從 0 開始算的 (0-based)
+                # 所以要減 1
+                error_idx = int(match.group(1)) - 1
+                
+                # 確保 index 沒有超出範圍
+                if 0 <= error_idx < len(data):
+                    bad_row = data[error_idx]
+                    
+                    # 把 Tuple 轉回 Dictionary，方便你閱讀欄位名稱
+                    bad_data = dict(zip(cols, bad_row))
+                    
+                    print("\n--- 抓到問題資料了！ ---")
+                    print(f"錯誤位置: 第 {error_idx + 1} 筆 (List Index: {error_idx})")
+                    print(f"股票代號 (Stock ID): {bad_data.get('stock_id')}")
+                    print(f"交易日期 (Date): {bad_data.get('date')}")
+                    print(f"漲跌幅 (change_pct): {bad_data.get('change_pct')}")
+                    print(f"收盤價 (close): {bad_data.get('close')}")
+                    print(f"完整資料: {bad_data}")
+                    print("-" * 30 + "\n")
+            # ---------------------------
+
     except Exception as e:
         print(f"[DB] 寫入失敗: {e}")
     finally:
