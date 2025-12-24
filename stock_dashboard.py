@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from db_utils import get_db_connection
 
-# streamlit run app.py
+# streamlit run stock_dashboard.py
 
 # 1. 設定網頁標題
 st.set_page_config(page_title="台股 K 線分析", layout="wide")

@@ -10,3 +10,8 @@ __pycache__/
 # 忽略虛擬環境資料夾 (如果有的話)
 venv/
 .env
+
+# 忽略系統檔
+desktop.ini
+*.iml
+.idea/
