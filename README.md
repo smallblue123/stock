@@ -24,7 +24,7 @@
 
 ## 技術與套件
 
-- **語言**: Python 3.x
+- **語言**: Python
 - **網頁框架**: Streamlit
 - **繪圖核心**: Plotly
 - **資料處理**: Pandas
@@ -34,7 +34,7 @@
 
 1. 安裝必要套件：
    
-   pip install streamlit pandas plotly sqlalchemy mysql-connector-python
+   pip install streamlit pandas plotly mysql-connector-python
 
 2. 設定資料庫連線。
 
