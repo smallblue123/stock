@@ -4,16 +4,7 @@ import numpy as np
 import mysql.connector
 from io import StringIO
 from datetime import datetime
-
-# ==========================================
-# 資料庫設定
-# ==========================================
-DB_CONFIG = {
-    "host": "localhost",
-    "user": "root",
-    "password": "81997337rich",
-    "database": "stock_db"
-}
+from config import DB_CONFIG
 
 # ==========================================
 # 1. Fetcher 層 (負責抓取與清洗)

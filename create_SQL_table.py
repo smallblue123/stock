@@ -1,20 +1,20 @@
 import mysql.connector
 from mysql.connector import Error
+import copy
+from config import DB_CONFIG
 
-# ==========================================
-# 資料庫設定
-# ==========================================
-DB_CONFIG = {
-    "host": "localhost",
-    "user": "root",
-    "password": "81997337rich" 
-}
-DB_NAME = "stock_db"
 
 def create_safe_database():
     conn = None
     cursor = None
     try:
+        server_config = copy.copy(DB_CONFIG)
+        if "database" in server_config:
+            DB_NAME = DB_CONFIG.get("database", "default_db_name")
+            # 在連線到 Server 時必須移除 database 鍵，否則會嘗試連線到一個可能不存在的 DB
+            del server_config["database"]
+
+
         # ---------------------------------------------------------
         # 1. 連接 MySQL Server 並建立資料庫
         # ---------------------------------------------------------
@@ -31,9 +31,7 @@ def create_safe_database():
         # ---------------------------------------------------------
         # 2. 連接指定資料庫開始建表
         # ---------------------------------------------------------
-        config_with_db = DB_CONFIG.copy()
-        config_with_db["database"] = DB_NAME
-        conn = mysql.connector.connect(**config_with_db)
+        conn = mysql.connector.connect(**DB_CONFIG)
         cursor = conn.cursor()
 
         # 啟用外鍵檢查
@@ -71,7 +69,7 @@ def create_safe_database():
             volume BIGINT COMMENT '成交股數 (單位:股)',
             turnover DECIMAL(20,2) COMMENT '成交金額 (單位:元)',
             change_price DECIMAL(8,2) COMMENT '漲跌價',
-            change_pct DECIMAL(5,2) COMMENT '漲跌幅 (單位:%)',
+            change_pct DECIMAL(10,2) COMMENT '漲跌幅 (單位:%)',
             
             PRIMARY KEY (stock_id, date),
             FOREIGN KEY (stock_id) REFERENCES stocks(id) ON DELETE CASCADE
